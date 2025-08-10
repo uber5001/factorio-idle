@@ -1,6 +1,6 @@
 -- IdleX100: prototype adjustments
 local SCALE = 100
-local SPOIL_SCALE = 10  -- only used in runtime via difficulty settings
+local SPOIL_SCALE = 10   -- only used in runtime via difficulty settings
 local MAX_AMOUNT = 65535 -- engine limit for amount fields
 
 -- --- helpers ---------------------------------------------------------------
@@ -15,7 +15,7 @@ end
 local function normalize_ingredient(x)
   if x.name then return x end
   -- short form {name, amount}
-  return {type = x.type or "item", name = x[1], amount = x[2], fluidbox_index = x[3]}
+  return { type = x.type or "item", name = x[1], amount = x[2], fluidbox_index = x[3] }
 end
 
 -- Build the set of “final products”.
@@ -24,20 +24,12 @@ local function mark_final(name) if name then FINAL[name] = true end end
 
 local item_types = {
   "item", "item-with-entity-data", "module", "armor", "capsule", "repair-tool",
-  "tool", "item-with-tags", "item-with-inventory", "item-with-label", "rail-planner"
+  "tool", "item-with-tags", "item-with-inventory", "item-with-label", "rail-planner", "ammo"
 }
 
-local function scan_items(tbl)
-  if not tbl then return end
-  for name, proto in pairs(tbl) do
-    if proto.place_result or proto.place_as_tile then
-      FINAL[name] = true
-    end
-  end
-end
-
-for _, t in pairs(item_types) do scan_items(data.raw[t]) end
 mark_final("cliff-explosives")
+mark_final("construction-robot")
+mark_final("logistic-robot")
 
 -- Equipment items: mark any equipment prototype names (they all have a `shape` field)
 for type_name, list in pairs(data.raw) do
@@ -50,13 +42,11 @@ for type_name, list in pairs(data.raw) do
   end
 end
 
--- Rockets: treat rocket parts as final so rockets cost/time scale properly
-mark_final("rocket-part")
-
 -- Ensure key categories are final even if not placeable
 for name in pairs(data.raw.armor or {}) do mark_final(name) end
 for name in pairs(data.raw.module or {}) do mark_final(name) end
 for name in pairs(data.raw.gun or {}) do mark_final(name) end
+for name in pairs(data.raw["item-with-entity-data"] or {}) do mark_final(name) end
 
 -- Capture bot rockets: treat as final (explicitly detect capture-themed rockets)
 for name in pairs(data.raw.ammo or {}) do
@@ -79,19 +69,20 @@ for _, t in pairs(item_types) do
   end
 end
 
--- Increase rocket cargo inventory size if present on prototypes
-for _, s in pairs(data.raw["rocket-silo"] or {}) do
-  if s.to_be_inserted_to_rocket_inventory_size then
-    s.to_be_inserted_to_rocket_inventory_size = math.floor(s.to_be_inserted_to_rocket_inventory_size * SCALE)
-  end
-  if s.result_inventory_size then
-    s.result_inventory_size = math.floor(s.result_inventory_size * SCALE)
-  end
+-- Scale stack sizes for all items ×100 (skip not-stackable and finals)
+local function has_flag(flags, name)
+  if not flags then return false end
+  for _, f in pairs(flags) do if f == name then return true end end
+  return false
 end
-for _, r in pairs(data.raw["rocket-silo-rocket"] or {}) do
-  if r.inventory_size then r.inventory_size = math.floor(r.inventory_size * SCALE) end
-  if r.rocket_inventory_size then r.rocket_inventory_size = math.floor(r.rocket_inventory_size * SCALE) end
-  if r.cargo_inventory_size then r.cargo_inventory_size = math.floor(r.cargo_inventory_size * SCALE) end
+for _, t in pairs(item_types) do
+  for name, proto in pairs(data.raw[t] or {}) do
+    if has_flag(proto.flags, "not-stackable") or is_final_item(name) then
+      if has_flag(proto.flags, "not-stackable") then proto.stack_size = 1 end
+    elseif proto.stack_size then
+      proto.stack_size = math.max(1, math.floor((proto.stack_size or 1) * SCALE))
+    end
+  end
 end
 
 -- Decide if a recipe involves any final-products on either side.
@@ -106,7 +97,7 @@ end
 
 local function get_products(r)
   if r.results then return r.results end
-  if r.result then return {{type = "item", name = r.result, amount = r.result_count or 1}} end
+  if r.result then return { { type = "item", name = r.result, amount = r.result_count or 1 } } end
   return nil
 end
 
@@ -170,17 +161,26 @@ local function x100_health(e)
 end
 
 -- 1) Trains only (locos & wagons)
-for _, t in pairs({"locomotive", "cargo-wagon", "fluid-wagon", "artillery-wagon"}) do
+for _, t in pairs({ "locomotive", "cargo-wagon", "fluid-wagon", "artillery-wagon", "car", "spider-vehicle" }) do
   for _, e in pairs(data.raw[t] or {}) do x100_health(e) end
 end
 
 -- 2) Buildings (exclude vehicles/units/resources/trees/naturals)
 local EXCLUDE_TYPES = {
-  car=true, ["spider-vehicle"]=true, unit=true, resource=true, tree=true,
-  ["locomotive"]=true, ["cargo-wagon"]=true, ["fluid-wagon"]=true, ["artillery-wagon"]=true
+  car = true,
+  ["spider-vehicle"] = true,
+  unit = true,
+  resource = true,
+  tree = true,
+  plant = true,
+  ["land-mine"] = true,
+  ["locomotive"] = true,
+  ["cargo-wagon"] = true,
+  ["fluid-wagon"] = true,
+  ["artillery-wagon"] = true
 }
 for type_name, list in pairs(data.raw) do
-  if type(list)=="table" and not EXCLUDE_TYPES[type_name] then
+  if type(list) == "table" and not EXCLUDE_TYPES[type_name] then
     for _, e in pairs(list) do
       if e and e.max_health and not e.autoplace then x100_health(e) end
     end
@@ -190,7 +190,7 @@ end
 -- 2b) Enemy spawners and worm turrets are buildings; ensure they are scaled
 for _, e in pairs(data.raw["unit-spawner"] or {}) do x100_health(e) end
 for _, e in pairs(data.raw["turret"] or {}) do
-  if e.type == "turret" and (e.subgroup == "enemies" or (e.flags and table.concat(e.flags, ","):find("not-blueprintable") )) then
+  if e.type == "turret" and (e.subgroup == "enemies" or (e.flags and table.concat(e.flags, ","):find("not-blueprintable"))) then
     x100_health(e)
   end
 end
@@ -211,10 +211,10 @@ local function scale_minable_results(minable)
 end
 
 for type_name, list in pairs(data.raw) do
-  if type(list)=="table" then
+  if type_name ~= "resource" and type_name ~= "plant" and type(list) == "table" then
     for name, e in pairs(list) do
       if e and e.autoplace and e.minable and name ~= "pentapod-shell" then
-        if e.type ~= "resource" then
+        if e.type ~= "resource" and e.type ~= "plant" then
           if e.max_health then e.max_health = math.floor(e.max_health * SCALE) end
           if e.minable.mining_time then e.minable.mining_time = (e.minable.mining_time or 0.1) * SCALE end
           scale_minable_results(e.minable)
@@ -248,12 +248,94 @@ for name, d in pairs(data.raw["mining-drill"] or {}) do
   end
 end
 
--- Set rocket lift weight ×100 in utility-constants (leave default_item_weight unchanged)
-local uc_tbl = data.raw["utility-constants"]
-local uc = uc_tbl and uc_tbl["default"]
-if uc then
-  uc.rocket_lift_weight = (uc.rocket_lift_weight or 1) * SCALE
+-- Simple placeable_by handling: if missing, add same-name item with count=1, then scale counts ×SCALE
+local function scale_pb_counts(pb)
+  if type(pb) ~= "table" then error() end
+  if pb[1] and type(pb[1]) == "table" and pb[1].item then
+    for _, entry in ipairs(pb) do
+      entry.count = math.max(1, math.floor((entry.count or 1) * SCALE))
+    end
+  elseif pb.item then
+    pb.count = math.max(1, math.floor((pb.count or 1) * SCALE))
+  end
 end
 
--- (Removed) Infinite resource depletion adjustment; richness is scaled at runtime and
--- pumpjacks are slower, so depletion proceeds ~100× slower naturally.
+-- Entities
+-- for name, e in pairs(data.raw or {}) do end
+for type_name, list in pairs(data.raw) do
+  for name, e in pairs(list) do
+    if e and name ~= "construction-robot" and name ~= "logistic-robot" and name ~= "land-mine" then
+      if name == "rail-ramp" then
+        e.placeable_by = { { item = "rail-ramp", count = 1 } }
+      elseif name == "stone-path" or name == "frozen-stone-path" then
+        -- there's a more robust way to handle this using place_as_tile, but this works for now
+        e.placeable_by = { { item = "stone-brick", count = 1 } }
+      elseif not e.placeable_by and data.raw.item[name] then
+        e.placeable_by = { { item = name, count = 1 } }
+      end
+      if e.placeable_by then
+        scale_pb_counts(e.placeable_by)
+        if e and e.minable then e.__idlex100_was_minable = true end
+      end
+    end
+  end
+end
+
+
+-- Ensure mined return matches placeable_by counts (so you get back what you place ×SCALE)
+local function ensure_minable_return(ent, item_name, count)
+  if not ent or not ent.__idlex100_was_minable then return end
+  ent.minable = ent.minable or { mining_time = 0.2 }
+  local m = ent.minable
+  if m.results then
+    local found = false
+    for _, r in pairs(m.results) do
+      if (r.type or "item") == "item" and r.name == item_name then
+        r.amount = count
+        r.amount_min = nil; r.amount_max = nil
+        found = true
+        break
+      end
+    end
+    if not found then
+      table.insert(m.results, { type = "item", name = item_name, amount = count })
+    end
+    m.result = nil; m.count = nil
+  elseif m.result then
+    if m.result == item_name then
+      m.results = { { type = "item", name = item_name, amount = count } }
+      m.result = nil; m.count = nil
+    else
+      m.results = {
+        { type = "item", name = m.result,  amount = m.count or 1 },
+        { type = "item", name = item_name, amount = count }
+      }
+      m.result = nil; m.count = nil
+    end
+  else
+    m.results = { { type = "item", name = item_name, amount = count } }
+  end
+end
+
+-- Apply minable return only to entities that were already minable in vanilla
+for type_name, list in pairs(data.raw) do
+  if type_name ~= "resource" and type_name ~= "plant" and type(list) == "table" then
+    for _, e in pairs(list) do
+      local pb = e and e.placeable_by
+      if e and e.__idlex100_was_minable and pb then
+        if pb[1] and type(pb[1]) == "table" and pb[1].item then
+          for _, entry in ipairs(pb) do
+            ensure_minable_return(e, entry.item, entry.count or 1)
+          end
+        elseif pb.item then
+          ensure_minable_return(e, pb.item, pb.count or 1)
+        end
+      end
+    end
+  end
+end
+
+-- nerf cargo-wagon
+data.raw["cargo-wagon"]["cargo-wagon"].inventory_size = 1
+data.raw["character-corpse"]["character-corpse"].time_to_live = data.raw["character-corpse"]["character-corpse"]
+    .time_to_live * 1000
