@@ -4,7 +4,7 @@
     "title": "Factorio Idle — 100x slower",
     "author": "uber5001",
     "factorio_version": "2.0",
-    "description": "Scales late-game recipes, HP, evolution, spoilage, and resources to make Factorio take ~100× longer while keeping vanilla balance.",
+    "description": "Turns Factorio into an idle game: 100x slower progression while keeping vanilla balance.",
     "dependencies": [
         "base >= 2.0"
     ]
